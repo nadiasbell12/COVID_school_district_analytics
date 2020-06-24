@@ -1,3 +1,6 @@
+manual/
+
+src/input/*
 src/output/*
 src/data_extraction/__pycache__
 src/debug.log
@@ -5,3 +8,6 @@ src/debug.log
 R_prog/output/*
 R_prog/input/*
 R_prog/.Rhistory
+
+*.xlsx
+*.csv
