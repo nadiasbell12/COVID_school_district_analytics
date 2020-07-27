@@ -9,8 +9,9 @@ verify_ssl = true
 selenium = "*"
 pandas = "*"
 numpy = "*"
-yaml = "*"
 pyyaml = "*"
+textdistance = "*"
+fuzzywuzzy = "*"
 
 [requires]
 python_version = "3.7"
