@@ -1,0 +1,281 @@
+---
+title: "COVID closure date diagnostics"
+author: "Nadia Bell"
+date: "5/29/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(tidyverse)
+library(readxl)
+library(openxlsx)
+library(lubridate)
+library(rjson)
+library(kableExtra)
+
+# note: see if can get DT::datatable() to work 
+# note: see which chunks to not include with echo = false 
+
+```
+
+This RMarkdown file documents creating construct file that includes district level information on closure, distant learning and instruction dates. The primary output of this will be a csv file that contains the District Name, District ID, State, Closure Date, and End Date of the school year. A supplemental data file will provide the distant learning date and any extranneous data found in the data cleaning process. 
+
+To better understand the limitations and granularity of each data source, we will provide diagnotics noting missing data elements, discrepancies between sources, and which data is ulimately used. 
+
+```{r, echo = FALSE}
+# load data 
+
+ ## 1. load in COVID District data 
+
+District_dat <- read.csv("Downloads/District Responses to COVID-19 School Closures - DISTRICT RESPONSE DATABASE.csv")
+
+## 2. load in data set with state closure dates 
+State_dat <- read.xlsx("Downloads/coronavirus-school-closures-data.xlsx", detectDates = T)
+colnames(State_dat) <- State_dat[1,] 
+State_dat <- State_dat[-1,]
+
+## 3. load in MCH  data 
+MCH_closures <- read.xlsx("Downloads/MCH_COVID19_School_Closings_List.xlsx", detectDates = T)
+
+MCH_closures <- MCH_closures %>% 
+  select(District.Name, State, Physical.Closed.Date, Instructional.Reopen.Date, Physical.Open.Date) %>%
+  unique 
+
+
+## 4. JS FILE 
+CA_close_dates <- read.csv("C:/Users/nbell/Mathematica/HS COVID-19 Analytics - Documents/raw files/CA_close_dates.csv") %>% select(district = District,
+                                                                                                                                   closeDate= CloseDate)
+
+
+```
+
+
+# Closure Dates 
+
+### Preliminary Data Cleaning 
+
+1. Standardize variables names to facilitate clear merging of datasets. 
+
+2. Note any missingness in initial datasets. 
+
+```{r, echo = FALSE}
+
+District_dat <- District_dat %>% select("district" = "DISTRICT", "state" = "STATE", OVERVIEW)
+
+State_dat <- State_dat %>% select("state" = "State Abbreviation", closeDate = "State Closure Start Date")
+
+MCH_closures <- MCH_closures %>% select("district" = "District.Name", "state" = "State", "closeDate" = "Physical.Closed.Date", "distanceDate" = "Instructional.Reopen.Date")
+
+
+
+## diagnostic data table that notes missing data in orginal data among each standardized variables 
+
+district_missing <- sapply(District_dat, function(x) sum(is.na(x))) / nrow(District_dat)
+
+state_missing <- sapply(State_dat, function(x) sum(is.na(x))) / nrow(State_dat)
+
+MCH_missing <- sapply(MCH_closures, function(x) sum(is.na(x))) / nrow(MCH_closures)
+
+
+
+data.frame(data_source = c("CRPE", "State_closures", "MCH"), district = c(district_missing[1], NA_character_, MCH_missing[1]), 
+           state = c(district_missing[2], state_missing[1], MCH_missing[2]), closeDate = c(NA_character_, state_missing[2], MCH_missing[3]),
+           OVERVIEW = c(district_missing[3], NA_character_, NA_character_), 
+           distanceDate = c(NA_character_, NA_character_, MCH_missing[4])) %>% DT::datatable()
+```
+
+
+### Merge State Level closure dates to district level data 
+
+The state level closure dates will be used when we don't have more granular district level information on closure dates. 
+
+```{r, echo = FALSE}
+# merge data here 
+
+# 1. Merge state data to district_data 
+
+District_dat <- left_join(District_dat %>% 
+                            mutate(state = str_split(as.list(as.character(District_dat$state)), ", ")) %>% 
+                            unnest(state), State_dat, by = "state") %>% 
+                            filter(state %in% c(state.abb, "DC"))
+# 2. Merge state data to MCH data 
+
+MCH_closures <- left_join(MCH_closures, State_dat, by = "state")
+
+```
+
+
+
+We want to verify that any state aggregated data matches the data source with state closures. We will create a flag to document any discrepancies between these two data sources. 
+
+```{r, echo = FALSE}
+
+MCH_closures <- MCH_closures %>% mutate(closeDate_diff = closeDate.x != closeDate.y) 
+
+all_dscp <- na.omit(unique(MCH_closures$state[MCH_closures$closeDate.x !=MCH_closures$closeDate.y]))
+
+# we are mainly concerned where MCH closure date is later than the state closure date 
+later_dscp <- na.omit(unique(MCH_closures$state[MCH_closures$closeDate.x  > MCH_closures$closeDate.y]))
+
+# if the MCH closure date is earlier than state closure date 
+earlier_dscp <- na.omit(unique(MCH_closures$state[MCH_closures$closeDate.x < MCH_closures$closeDate.y]))
+
+# create table to tally any discrepancies, list state names 
+
+data.frame(Descrepancy = c("Dates differ at all", "MCH date later", "MCH date earlier"), state_count = c(length(all_dscp), length(later_dscp), length(earlier_dscp)), states = c(paste(all_dscp, collapse=","), paste(later_dscp, collapse = ","), paste(earlier_dscp, collapse = ","))) %>% DT::datatable()
+```
+
+### Extracting district level variation 
+
+
+We will examine the released notices from available school districts and extract district specific closure dates. The procedure to extract the closure date searches for any date in February, March or April with 25 characters of a word containing the root "clos" to indicate closure or closed. A similar logic is followed to detect dates to transition to distance learning. 
+
+For those districts that do not provide closure information in their released notices, we will use the state level closure data as the official school closure date. The table below displays the number of district level closure dates found in the CRPE data source. 
+
+
+```{r, warning = FALSE, echo = FALSE}
+District_dat1 <- District_dat  %>% 
+                mutate(closure_flag = grepl('(?<=clos).{1,25}(February|March|April)|.{1,25}(?=clos)', OVERVIEW, perl = TRUE, ignore.case = T),
+                        closeDate.d = ifelse(closure_flag == 1, str_extract(OVERVIEW,'(?<=clos).{1,25}(February|March|April)\\s+(\\d{1,2})'), 0),
+                        closeDate.d = str_extract(closeDate.d, '(February|March|April)\\s+(\\d{1,2})'),
+                        closeDate.d = mdy(paste0(closeDate.d, ",2020")),
+                        distance_flag = grepl('(?<=learning).{1,25}(February|March|April)|.{1,25}(?=learning)', OVERVIEW, perl = TRUE, ignore.case = T),
+                        distanceDate = ifelse(distance_flag == 1, str_extract(OVERVIEW,'(?<=learning).{1,25}(Febuary|March|April)\\s+(\\d{1,2})'), 0),
+                        distanceDate = str_extract(distanceDate, '(February|March|April)\\s+(\\d{1,2})'),
+                        distanceDate = mdy(paste0(distanceDate, ",2020")),
+                       all_dates = lapply(str_extract_all(OVERVIEW, '(February|March|April)\\s+(\\d{1,2})'), function(x) mdy(paste0(x, ",2020")) ),
+                       all_dates = do.call("c",lapply(all_dates, min))) 
+
+# note: case_when filters cases by passing condition 
+ ## so for cases where district date wasn't replaced will move on to step to check if the earliest date in text was earlier than state close date  
+
+District_dat1 <- District_dat1 %>% mutate(closeDate.x = case_when(closeDate.d < closeDate ~ as.character(closeDate.d), 
+                                                  all_dates < closeDate ~ as.character(all_dates), 
+                                                    TRUE ~ closeDate),
+                                          closeDate.x.cts = case_when(closeDate.d < closeDate ~ 1, 
+                                                  all_dates < closeDate ~ 2, 
+                                                    TRUE ~ 3), 
+                                          closeDate.source = case_when(closeDate.d < closeDate ~ "CRPE", 
+                                                  all_dates < closeDate ~ "CRPE", 
+                                                    TRUE ~ "State reported date"),
+                                          closeDate.level = case_when(closeDate.d < closeDate ~ "district", 
+                                                  all_dates < closeDate ~ "district", 
+                                                    TRUE ~ "state")) 
+District_dat <- District_dat1 %>% select(district, state, closeDate = closeDate.x, distanceDate, closeDate.source, closeDate.level)
+
+```
+
+```{r, echo = FALSE}
+
+data.frame(Replacement = c("Replaced by date near 'clos'", "Replaced by earliest date in text", "Not replaced"), count = as.vector(table(District_dat1$closeDate.x.cts)), percent = 100 * as.vector(table(District_dat1$closeDate.x.cts))/nrow(District_dat1)) %>% DT::datatable()
+
+```
+
+
+
+
+
+
+### Merge MCH and CRPE Data sources 
+
+We want to combine the CRPE file that contains district specific closure dates with the MCH data to provide more granularity.  
+
+```{r, warning = FALSE, echo = FALSE}
+
+## use full join in order to keep districts that are not in MCH but in CRPE data 
+## remove duplicates using slice 
+all_districts <- full_join(MCH_closures, District_dat, by = c("district", "state")) %>% 
+  group_by(district, state) %>% slice(1)
+
+```
+
+```{r}
+
+## verify number of districts that were in both files 
+ stopifnot(sum(!is.na(all_districts$closeDate)) == nrow(District_dat))
+```
+
+We see that the merge was successful because all 109 districts in the CRPE data are present in the joined data set. 
+
+For districts in both files, we will replace the closure date and district date if there was an earlier date found in the district specific data. 
+
+```{r, echo = FALSE }
+## if district was in district response dataset and had more accurate closure/distance learning data --> replace MCH info 
+
+all_districts1 <- all_districts %>% mutate(closeDate.all =  case_when(!is.na(closeDate) ~ as.character(pmin(closeDate, as.character(closeDate.x), closeDate.y)), 
+                                                                      closeDate_diff == T ~ as.character(pmin(closeDate.x, closeDate.y)),
+                                                                    closeDate_diff == F ~ as.character(closeDate.x),
+                                                                    TRUE ~ NA_character_), 
+                                          closeDate.all.cts  = case_when(!is.na(closeDate) ~ 1,
+                                                                         closeDate_diff == T ~ 2,
+                                                                         closeDate_diff == F ~ 3,
+                                                                    TRUE ~ 4),
+                                          closeDate.source = case_when(closeDate.all == closeDate.x ~ "MCH",
+                                                                       closeDate.all == closeDate.y ~ "State reported date", 
+                                                                       closeDate.all == closeDate ~ closeDate.source), 
+                                          closeDate.level = case_when(closeDate.all == closeDate ~ closeDate.level, 
+                                                                      TRUE ~ "state"),
+                                         distanceDate = case_when(!is.na(distanceDate.x) & !is.na(distanceDate.y) ~
+                                                                     as.character(pmin(distanceDate.x, distanceDate.y, na.rm = T)), 
+                                                                   !is.na(distanceDate.x) & is.na(distanceDate.y) ~ as.character(distanceDate.x),
+                                                                   is.na(distanceDate.x) & !is.na(distanceDate.y) ~ as.character(distanceDate.y),
+                                                                   TRUE ~ NA_character_), 
+                                          distanceDate.cts = case_when(!is.na(distanceDate.x) & !is.na(distanceDate.y) ~
+                                                                    1, 
+                                                                   !is.na(distanceDate.x) & is.na(distanceDate.y) ~ 2,
+                                                                   is.na(distanceDate.x) & !is.na(distanceDate.y) ~ 3,
+                                                                   TRUE ~ 4))
+
+
+
+all_districts <- all_districts1 %>% select(district, state, closeDate = closeDate.all, distanceDate, closeDate.source, closeDate.level)
+
+
+```
+
+
+Where there is a discrepancy between two closure or distance learning dates we choose the earlier date. The following table summarizes the number of districts where there were differences in the respective dates provided between data sources. 
+
+```{r, echo = FALSE}
+data.frame(`Close Date Replacement` = c("District data", "MCH and State discrepancy", "No replacement"), 
+           counts =as.vector(table(all_districts1$closeDate.all.cts))[1:3],
+           percent = 100*as.vector(table(all_districts1$closeDate.all.cts))[1:3]/nrow(all_districts1)) %>% DT::datatable()
+
+data.frame(`Distance Date Replacement` = c("MCH and District level discrepancy", "No replacement"), 
+           counts = c(sum(all_districts1$distanceDate.cts == 1), sum(all_districts1$distanceDate.cts != 1)), 
+           percents = 100 * c(sum(all_districts1$distanceDate.cts == 1), sum(all_districts1$distanceDate.cts != 1))/ nrow(all_districts1)) %>% DT::datatable()
+```
+
+
+# Clean district names 
+
+```{r}
+
+all_districts <- all_districts %>% ungroup(district) %>% 
+  mutate(orig_district_clos = district,
+                         district = toupper(str_remove_all(district, regex(" County| Independent| Schools| School| Community| Cmnty| Unit| Charter| Unified| District| Public", ignore_case = T))))
+
+CA_close_dates <- CA_close_dates %>% mutate(state = "CA", orig_district_clos = district, 
+                                            district = toupper(str_remove_all(district, regex(" County| Independent| Schools| School| Community| Cmnty| Unit| Charter| Unified| District| Public| Elementary", ignore_case = T))), closeDate.source = "EdSource CA data", closeDate.level = "district", distanceDate = NA_character_) %>% select(colnames(District_dat))
+
+```
+
+
+# Extract data that varies at district level 
+
+
+```{r}
+#write.csv(rbind(District_dat %>% filter(closeDate.source == "CRPE"), CA_close_dates), "COVID_districtlevel_close_dates.csv")
+
+
+```
+
+
+```{r}
+# save districts in .csv 
+ 
+#write.csv(all_districts, "COVID_district_clos_dates.csv")
+```
+
