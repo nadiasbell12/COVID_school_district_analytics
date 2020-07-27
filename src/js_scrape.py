@@ -21,4 +21,4 @@ for line in all_text:
             acc += 1
 df_out = pd.DataFrame.from_dict(complete_dict, orient='index').set_index('District')
 
-df_out.to_csv('CA_close_dates.csv')
+df_out.to_csv('output/CA_close_dates.csv')
