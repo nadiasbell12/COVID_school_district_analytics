@@ -1,13 +1,3 @@
-
-# A. If 50% or more of districts within a county have a non-missing date, 
-# and there is little variation of dates between districts within the county, 
-# replace missing dates with the modal date among non-missing dates in the county.
-
-# B. If fewer than 50% of districts within a county have a non-missing date, 
-# or there is considerable variation of dates between districts within the county, 
-# replace each district’s missing date with the 
-# enrollment-weighted average of the number of days away from the enrollment-weight midpoint date for the county. 
-
 # package imports
 import pandas as pd
 import numpy as np
