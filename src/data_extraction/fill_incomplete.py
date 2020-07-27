@@ -1,7 +1,7 @@
 # local imports
 from scrape_publicholidays import get_dates
 
-# downloaded packages
+# package imports
 from selenium import webdriver
 import pandas as pd
 

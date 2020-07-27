@@ -1,12 +1,12 @@
-# python built-ins
-import os
-import datetime as dt
-
 # package imports
 import textdistance
 import pandas as pd
 import numpy as np
 from fuzzywuzzy import fuzz
+
+# python standard library
+import os
+import datetime as dt
 
 user = 'bsmit'
 root_path = f'C:/Users/{user}/Mathematica/HS COVID-19 Analytics - Documents/'

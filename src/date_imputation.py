@@ -8,9 +8,12 @@
 # replace each district’s missing date with the 
 # enrollment-weighted average of the number of days away from the enrollment-weight midpoint date for the county. 
 
-import os, re
+# package imports
 import pandas as pd
 import numpy as np
+
+# python standard library
+import os, re
 import datetime as dt
 
 user = 'bsmit'

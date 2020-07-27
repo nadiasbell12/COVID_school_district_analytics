@@ -1,5 +1,8 @@
-import re
+# package imports
 import pandas as pd
+
+# python standard library
+import re
 
 # read in as text
 with open('input\CA_districts.js', 'r') as reader:

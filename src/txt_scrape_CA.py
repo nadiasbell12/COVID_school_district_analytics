@@ -1,6 +1,9 @@
-import re
+# package imports
 import pandas as pd
 import numpy as np
+
+# python standard library
+import re
 from datetime import date, datetime
 import calendar
 
