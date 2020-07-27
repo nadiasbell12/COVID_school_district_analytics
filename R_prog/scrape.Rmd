@@ -5,15 +5,8 @@ date: "6/12/2020"
 output: html_document
 ---
 
-```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = TRUE)
-```
-
-## R Markdown
-
-This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
-
-When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+# This program is for scraping PDF data from individual states 
+# based on documents downloaded from the internet
 
 ```{r imports}
 library(tabulizer)
@@ -154,21 +147,26 @@ May <- format(DE_dfs[[10]])
 Jun <- format(DE_dfs[[11]])
 
 DE_df_combined <- cbind(Aug, Sep, May, Jun)
-# 
+
 # which('LPD' == DE_df_combined, arr.ind=TRUE)
 # which(grepl('LPD', DE_df_combined), arr.ind=TRUE)
 
-first_dates <- c()
+a <- data.frame()
+first_dates <- list()
 for (i in 1:nrow(DE_df_combined)){
   row <- DE_df_combined[i,]
+  name <- row$`AUG_School District`
   matches <- grep('FPD', row, value=TRUE)
-  date <- names(matches[length(matches)]) # TODO: should I grab the first one or last?
+  # date <- names(matches[length(matches)])
   if (length(date) == 0) {
-    first_dates <- c(first_dates, "")
+    first_dates <- append(first_dates, list(name, NA, NA, NA))
   } else {
-  first_dates <- c(first_dates, date)
+    matches <- c(name, matches, rep(NA, 3 - length(matches)))
+    first_dates <- append(first_dates, list(matches))
   }
 }
+matrix(unlist(first_dates), nrow=4)
+data.frame(first_dates)
 
 last_dates <- c()
 for (i in 1:nrow(DE_df_combined)){
@@ -181,6 +179,7 @@ for (i in 1:nrow(DE_df_combined)){
   last_dates <- c(last_dates, date)
   }
 }
+
 
 DE_df_combined['AUG_School District']
 DE_df_combined['first_day'] = data.frame(first_dates)
