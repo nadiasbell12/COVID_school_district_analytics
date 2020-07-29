@@ -9,7 +9,7 @@ import datetime as dt
 user = 'bsmit'
 root_path = f'C:/Users/{user}/Mathematica/HS COVID-19 Analytics - Documents/'
 
-df = pd.read_excel(os.path.join(root_path, 'cleaned_files', 'lea_district_linkage_v7.xlsx'))
+df = pd.read_excel(os.path.join(root_path, 'cleaned_files', 'lea_district_linkage_v9.xlsx'))
 
 # make dictionary for the enrollment per county
 cnty_ccd_df = pd.read_csv(os.path.join(root_path, 'cleaned_files', 'CCD', 'cnty.ccd_dates.csv'))
@@ -28,8 +28,38 @@ df['dist_wgt'] = df.dist_enrol / df.cnty_enrol
 # TODO: not sure how the district enrollment can be higher than the county enrollment (district covers multiple counties?)
 # print(df[['cnty_enrol', 'dist_enrol', 'dist_wgt']].sort_values('dist_wgt', ascending=False))
 
-# change dates to numeric - start counting from January 1, 2020
+###### fill in missing dates where the district or state has a constant date value
+
+# create dictionaries for mapping
+# county-level static dates
+static_county_endDates = pd.read_csv(os.path.join(root_path, 'cleaned_files', 'static_endDates', 'countywide_endDates.csv'))
+static_county_endDates_dict = {k:v for k, v in zip(static_county_endDates.county_code, pd.to_datetime(static_county_endDates.endDate))}
+static_county_closeDates = pd.read_csv(os.path.join(root_path, 'cleaned_files', 'static_closeDates', 'countywide_closeDates.csv'))
+static_county_closeDates_dict = {k:v for k, v in zip(static_county_closeDates.county_code, pd.to_datetime(static_county_closeDates.real_closeDate))}
+# state-level closure dates
+state_closure_df = pd.read_excel(os.path.join(root_path, 'raw files', 'coronavirus-school-closures-data.xlsx'), header=1)
+state_closure_dict = {k:v for k,v in zip(state_closure_df['State Abbreviation'], state_closure_df['State Closure Start Date'])}
+# state-level static endDates doesn't help
+# static_state_endDates = pd.read_csv(os.path.join(root_path, 'cleaned_files', 'static_endDates', 'statewide_endDates.csv'))
+
+# make new endDate column taking the district close date if available, otherwise use the state closure date
+df['state_closeDate'] = df.state.map(state_closure_dict)
+df['static_county_endDate'] = df.county_code.map(static_county_endDates_dict).dt.date
+df['static_county_closeDate'] = df.county_code.map(static_county_closeDates_dict)
+
+# use county-level data first to fill in missing dates (if available)
+df.loc[df.endDate.isnull(), 'endDate'] = df['static_county_endDate']
+df.loc[df.real_closeDate.isnull(), 'real_closeDate'] = df['static_county_closeDate']
+
+# use state-level data second to fill in missing dates (if available)
+df.loc[df.real_closeDate.isnull(), 'real_closeDate'] = df['state_closeDate']
+
+
+############### Date imputation
+
+# start counting from January 1, 2020
 zero_date = pd.Timestamp(year=2020, month=1, day=1)
+df.endDate = pd.to_datetime(df.endDate)
 
 # construct variable counting number of days since the above given day
 var_name_days_since = zero_date.strftime('days_since_%b_%d')
@@ -98,18 +128,44 @@ for cc, sub_df in df.groupby('county_code'):
 # remove 'BI' state from data
 combined_df = combined_df.loc[combined_df.state != 'BI']
 
-# iterate through to calculate missed days for rows with new endDates
+# calculate the number of weekdays between real_closeDate and endDate
+def date_diff(date1, date2):
+    # np.busday_count does not count the end date, so add 1 to diff
+    diff = np.busday_count(np.datetime64(date2.date()), np.datetime64(date1.date())) + 1
+    return diff
+
 for idx, row in combined_df.iterrows():
-    if pd.isnull(row.endDate):
-        diff = np.busday_count(row.real_closeDate.date(), row.imputed_endDate)
-        combined_df.loc[idx, 'missed_days'] = diff
-        # indicator if the imputed_endDate was after Memorial Day (May 25)
-        combined_df.loc[idx, 'after_5/25'] = int(pd.to_datetime(row.imputed_endDate) >= dt.date(2020, 5, 25))
-        # indicator if the imputed_endDate was after July 4
-        combined_df.loc[idx, 'after_7/4'] = int(pd.to_datetime(row.imputed_endDate) >= dt.date(2020, 7, 4))
-        # subtract indicators from missed days to account for Holidays
-        combined_df.loc[idx, 'total_days_missed'] = diff - row.Spring_Break - row['after_5/25'] - row['after_7/4']
-        combined_df.loc[idx, var_name_days_since] = (pd.Timestamp(row.imputed_endDate) - zero_date).days
+    # use endDate if present; otherwise use imputed_endDate
+    if pd.notnull(row.endDate):
+        combined_df.loc[idx, 'missed_days'] = date_diff(row.endDate, row.real_closeDate)
+    else:
+        combined_df.loc[idx, 'missed_days'] = date_diff(pd.to_datetime(row.imputed_endDate), row.real_closeDate)
 
-combined_df.to_excel(os.path.join(root_path, 'cleaned_files', 'lea_district_linkage_imputations.xlsx'), index=False)
+# if total_days_missed are negative, that means that school had already ended
+# by the time schools were ordered to close. make them = 0
+combined_df.loc[combined_df.missed_days < 0, 'missed_days'] = 0
 
+combined_df['Spring_Break'] = 5
+# indicator if the endDate was after Memorial Day (May 25)
+combined_df['after_5/25'] = (pd.to_datetime(combined_df.endDate) >= dt.date(2020, 5, 25)).astype(int)
+# indicator if the endDate was after July 4
+combined_df['after_7/4'] = (pd.to_datetime(combined_df.endDate) >= dt.date(2020, 7, 4)).astype(int)
+
+# subtract indicators from missed days to account for Holidays
+combined_df['total_days_missed'] = combined_df.missed_days - combined_df.Spring_Break - combined_df['after_5/25'] - combined_df['after_7/4']
+
+# ensure all the date columns are proper dtypes
+date_cols = ['closeDate', 'static_county_closeDate', 'state_closeDate', 
+            'real_closeDate', 'distanceDate', 'static_county_endDate', 'endDate']
+combined_df[date_cols] = combined_df[date_cols].apply(pd.to_datetime)
+
+# sanity check on dates
+combined_df.loc[combined_df.endDate < dt.datetime(2020, 2, 1), 'endDate'] = np.nan
+
+# if total_days_missed are negative, that means that school had already ended
+# by the time schools were ordered to close. make them = 0
+combined_df.loc[combined_df.total_days_missed < 0, 'total_days_missed'] = 0
+
+df_out = combined_df.sort_values(['state', 'district_name'])
+
+df_out.to_excel(os.path.join(root_path, 'cleaned_files', 'lea_district_linkage_imputations.xlsx'), index=False)

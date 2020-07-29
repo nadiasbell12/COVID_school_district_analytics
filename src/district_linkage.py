@@ -21,22 +21,8 @@ ccd_df_orig = pd.read_csv(os.path.join(root_path, 'cleaned_files', 'CCD', 'dist.
 ccd_df_add_on = pd.read_csv(os.path.join(root_path, 'cleaned_files', 'CCD', 'dist.checkMatch.csv'))
 ccd_df = ccd_df_orig.merge(ccd_df_add_on[['state_leaid', 'district_name']], how='inner', on='state_leaid')
 
-# create dictionaries for mapping
-# county-level static dates
-static_county_endDates = pd.read_csv(os.path.join(root_path, 'cleaned_files', 'static_endDates', 'countywide_endDates.csv'))
-static_county_endDates_dict = {k:v for k, v in zip(static_county_endDates.county_code, pd.to_datetime(static_county_endDates.endDate))}
-static_county_closeDates = pd.read_csv(os.path.join(root_path, 'cleaned_files', 'static_closeDates', 'countywide_closeDates.csv'))
-static_county_closeDates_dict = {k:v for k, v in zip(static_county_closeDates.county_code, pd.to_datetime(static_county_closeDates.real_closeDate))}
-
-# state-level closure dates
-state_closure_df = pd.read_excel(os.path.join(root_path, 'raw files', 'coronavirus-school-closures-data.xlsx'), header=1)
-state_dict = {k:v for k,v in zip(state_closure_df['State Abbreviation'], state_closure_df['State Closure Start Date'])}
-# state-level static endDates doesn't help
-# static_state_endDates = pd.read_csv(os.path.join(root_path, 'cleaned_files', 'static_endDates', 'statewide_endDates.csv'))
-
 # similarity_alg = fuzz.token_sort_ratio
 similarity_alg = fuzz.token_set_ratio
-
 
 ###########################
 # iterrate through closure dates to find matches in the instruction dates
@@ -80,6 +66,8 @@ df_combined.loc[pd.to_datetime(df_combined.endDate) > dt.datetime(2020, 12, 30),
 
 # extract state from CCD for the merge
 ccd_df['state'] = ccd_df.state_leaid.str.extract('([A-Z]{2}).+')
+# remove state == 'BI' from CCD data
+ccd_df = ccd_df.loc[ccd_df.state != 'BI']
 
 # try merge with the CCD using exact strings
 # df_combined = df_out.merge(ccd_df, how = 'inner', left_on = ['district_x', 'state'], right_on = ['district_name', 'state'])
@@ -155,13 +143,11 @@ for idx, row in ccd_df.loc[ccd_df.state == 'NE'].iterrows():
 # fill in and format dates
 ccd_df['real_closeDate'] = pd.to_datetime(ccd_df['closeDate'])
 
-# fill in missing sources for closure date
+# fill in missing sources for closure dates
 ccd_df.loc[ccd_df["closeDate.source"].isnull(), 'closeDate.source'] = 'State-level file'
 
-####################
-"""
-This next chunk is iterative so that we can incorporate manual judgements for district matches
-"""
+################
+# This next chunk is iterative so that we can incorporate manual judgements for district matches
 
 # read the manually edited file to scratch out any mismatches flagged in lea_district_linkage_for_manual_edit.xlsx
 manual_df = pd.read_excel(os.path.join(root_path, 'cleaned_files', "lea_district_linkage_for_manual_edit.xlsx"))
@@ -189,74 +175,16 @@ for match_dist, df in df_out.groupby(['match_district', 'state']):
         df_out.loc[non_match_idx, 'endDate'] = np.nan
         df_out.loc[non_match_idx, 'distanceDate'] = np.nan
 
-"""
-# output a special file solely for the purpose of manually editing the matches
+# another measure for comparing strings
 dist_alg = textdistance.levenshtein.normalized_similarity
-df_out['lev_similarity'] = list(map(lambda x, y: dist_alg(x, y), df_out.district_ccd.fillna(''), df_out.match_district.fillna('')))
-df_out.to_excel(os.path.join(root_path, 'cleaned_files', 'lea_district_linkage_v7_for_manual_edit.xlsx'), index=False)
-"""
+df_out['lev_similarity'] = list(map(lambda x, y: dist_alg(x, y), df_out.district_name.fillna(''), df_out.match_district.fillna('')))
 
-###### fill in missing dates
-# make new endDate column taking the district close date if available, otherwise use the state closure date
-df_out['state_closeDate'] = df_out.state.map(state_dict)
-df_out['static_county_endDate'] = df_out.county_code.map(static_county_endDates_dict).dt.date
-df_out['static_county_closeDate'] = df_out.county_code.map(static_county_closeDates_dict)
+# output a special file solely for the purpose of manually editing the matches
+# df_out.to_excel(os.path.join(root_path, 'cleaned_files', 'lea_district_linkage_for_manual_edit_TEST.xlsx'), index=False)
 
-# use county-level data first to fill in missing dates (if available)
-df_out.loc[df_out.endDate.isnull(), 'endDate'] = df_out['static_county_endDate']
-df_out.loc[df_out.real_closeDate.isnull(), 'real_closeDate'] = df_out['static_county_closeDate']
+# output a file with the variables of interest
+keep_cols = ['leaid', 'district_name', 'state_leaid', 'state', 'county_code', 'match_district', 'ccd_similarity', 
+            'orig_match', 'similarity', 'closeDate.source', 'closeDate', 'real_closeDate', 'distanceDate', 'endDate']
+df_final = df_out[keep_cols].sort_values(['state', 'district_name'])
 
-# use state-level data second to fill in missing dates (if available)
-df_out.loc[df_out.real_closeDate.isnull(), 'real_closeDate'] = df_out['state_closeDate']
-
-# calculate the number of weekdays between real_closeDate and endDate
-def date_diff(date1, date2):
-    try:
-        # np.busday_count does not count the end date, so add 1 to diff
-        diff = np.busday_count(np.datetime64(date2.date()), np.datetime64(date1)) + 1
-    except:
-        if pd.notnull(date1):
-            new_date1 = np.datetime64(dt.datetime.strptime(date1, '%m/%d/%Y').date())
-            diff = np.busday_count(np.datetime64(date2.date()), new_date1) + 1
-            return diff
-        return np.nan
-    return diff
-
-for idx, row in df_out.iterrows():
-    df_out.loc[idx, 'missed_days'] = date_diff(row.endDate, row.real_closeDate)
-
-# if total_days_missed are negative, that means that school had already ended
-# by the time schools were ordered to close. make them = 0
-df_out.loc[df_out.missed_days < 0, 'missed_days'] = 0
-
-df_out['Spring_Break'] = 5
-# indicator if the endDate was after Memorial Day (May 25)
-df_out['after_5/25'] = (pd.to_datetime(df_out.endDate) >= dt.date(2020, 5, 25)).astype(int)
-# indicator if the endDate was after July 4
-df_out['after_7/4'] = (pd.to_datetime(df_out.endDate) >= dt.date(2020, 7, 4)).astype(int)
-
-# subtract indicators from missed days to account for Holidays
-df_out['total_days_missed'] = df_out.missed_days - df_out.Spring_Break - df_out['after_5/25'] - df_out['after_7/4']
-
-df_out.rename(columns={'district_name': 'district_ccd'}, inplace=True)
-
-# ensure all the date columns are proper dtypes
-date_cols = ['closeDate', 'static_county_closeDate', 'state_closeDate', 'real_closeDate', 'distanceDate', 'static_county_endDate', 'endDate']
-df_out[date_cols] = df_out[date_cols].apply(pd.to_datetime)
-
-# sanity check on dates
-df_out.loc[df_out.endDate < dt.datetime(2020, 2, 1), 'endDate'] = np.nan
-
-# if total_days_missed are negative, that means that school had already ended
-# by the time schools were ordered to close. make them = 0
-df_out.loc[df_out.total_days_missed < 0, 'total_days_missed'] = 0
-
-# output analysis file
-keep_cols = ['leaid', 'district_ccd', 'state_leaid', 'state', 'county_code', 'match_district', 'ccd_similarity', 
-            'orig_match', 'similarity', 'closeDate.source', 'closeDate', 'static_county_closeDate', 'state_closeDate',
-            'real_closeDate', 'distanceDate', 'static_county_endDate', 'endDate', 'missed_days', 'Spring_Break', 
-            'after_5/25', 'after_7/4', 'total_days_missed']
-df_final = df_out[keep_cols].sort_values(['state', 'district_ccd'])
-
-df_final.to_excel(os.path.join(root_path, 'cleaned_files', 'lea_district_linkage_v8.xlsx'), index=False)
-
+df_final.to_excel(os.path.join(root_path, 'cleaned_files', 'lea_district_linkage_v9.xlsx'), index=False)
